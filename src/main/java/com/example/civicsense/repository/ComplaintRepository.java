@@ -53,22 +53,21 @@ public interface ComplaintRepository extends JpaRepository<Complaint, Long> {
      * @return list of candidate parent complaints, closest first
      */
     @Query(value = """
-        SELECT c.*,
-               (6371000 * acos(
-                   LEAST(1.0, cos(radians(:lat)) * cos(radians(c.latitude))
-                   * cos(radians(c.longitude) - radians(:lng))
-                   + sin(radians(:lat)) * sin(radians(c.latitude)))
-               )) AS distance_metres
+        SELECT c.*
         FROM complaints c
         WHERE c.category             = :#{#category.name()}
           AND c.status NOT IN ('RESOLVED', 'CLOSED')
           AND c.parent_complaint_id  IS NULL
-        HAVING (6371000 * acos(
+          AND (6371000 * acos(
                    LEAST(1.0, cos(radians(:lat)) * cos(radians(c.latitude))
                    * cos(radians(c.longitude) - radians(:lng))
                    + sin(radians(:lat)) * sin(radians(c.latitude)))
                )) <= :radiusMetres
-        ORDER BY distance_metres ASC
+        ORDER BY (6371000 * acos(
+                   LEAST(1.0, cos(radians(:lat)) * cos(radians(c.latitude))
+                   * cos(radians(c.longitude) - radians(:lng))
+                   + sin(radians(:lat)) * sin(radians(c.latitude)))
+               )) ASC
         """,
         nativeQuery = true)
     List<Complaint> findNearbyOpenComplaintsInCategory(
