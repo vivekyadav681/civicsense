@@ -3,37 +3,95 @@ package com.example.civicsense.mapper;
 import com.example.civicsense.dto.response.ComplaintDetailResponse;
 import com.example.civicsense.dto.response.ComplaintSummaryResponse;
 import com.example.civicsense.entity.Complaint;
-import org.mapstruct.Mapper;
-import org.mapstruct.Mapping;
-import org.mapstruct.NullValuePropertyMappingStrategy;
+import org.springframework.stereotype.Component;
 
+import java.util.Collections;
 import java.util.List;
 
 /**
- * MapStruct mapper for converting {@link Complaint} entities to response DTOs.
+ * Spring Component for converting {@link Complaint} entities to response DTOs.
+ * Implemented directly to guarantee bean registration across all IDEs and compilers
+ * without relying on compile-time annotation processing.
  */
-@Mapper(componentModel = "spring", nullValuePropertyMappingStrategy = NullValuePropertyMappingStrategy.IGNORE)
-public interface ComplaintMapper {
+@Component
+public class ComplaintMapper {
 
     /**
-     * Maps a Complaint entity to the lightweight summary DTO used in paginated lists.
+     * Maps a Complaint entity to the lightweight summary DTO used in feeds and lists.
      */
-    @Mapping(target = "departmentName", source = "department.name")
-    @Mapping(target = "duplicateCount", expression = "java(complaint.getDuplicates() != null ? complaint.getDuplicates().size() : 0)")
-    ComplaintSummaryResponse toSummaryResponse(Complaint complaint);
+    public ComplaintSummaryResponse toSummaryResponse(Complaint complaint) {
+        if (complaint == null) {
+            return null;
+        }
+
+        int duplicateCount = (complaint.getDuplicates() != null) ? complaint.getDuplicates().size() : 0;
+        String departmentName = (complaint.getDepartment() != null) ? complaint.getDepartment().getName() : null;
+
+        return ComplaintSummaryResponse.builder()
+                .id(complaint.getId())
+                .title(complaint.getTitle())
+                .category(complaint.getCategory())
+                .status(complaint.getStatus())
+                .latitude(complaint.getLatitude())
+                .longitude(complaint.getLongitude())
+                .beforeImageUrl(complaint.getBeforeImageUrl())
+                .departmentName(departmentName)
+                .duplicateCount(duplicateCount)
+                .createdAt(complaint.getCreatedAt())
+                .build();
+    }
 
     /**
-     * Maps a Complaint entity to the full detail DTO used in the single-item endpoint.
+     * Maps a Complaint entity to the full detail DTO with duplicates and department object.
      */
-    @Mapping(target = "departmentName",    source = "department.name")
-    @Mapping(target = "department.id",     source = "department.id")
-    @Mapping(target = "department.name",   source = "department.name")
-    @Mapping(target = "reporterName",      source = "reporter.name")
-    @Mapping(target = "reporterEmail",     source = "reporter.email")
-    @Mapping(target = "parentComplaintId", source = "parentComplaint.id")
-    @Mapping(target = "duplicates",        source = "duplicates")
-    ComplaintDetailResponse toDetailResponse(Complaint complaint);
+    public ComplaintDetailResponse toDetailResponse(Complaint complaint) {
+        if (complaint == null) {
+            return null;
+        }
 
-    /** Maps a list of complaints to summary DTOs (used for the duplicates list). */
-    List<ComplaintSummaryResponse> toSummaryResponseList(List<Complaint> complaints);
+        String deptName = (complaint.getDepartment() != null) ? complaint.getDepartment().getName() : null;
+        Long deptId = (complaint.getDepartment() != null) ? complaint.getDepartment().getId() : null;
+        ComplaintDetailResponse.DepartmentInfo deptInfo = (complaint.getDepartment() != null)
+                ? new ComplaintDetailResponse.DepartmentInfo(deptId, deptName)
+                : null;
+
+        String repName = (complaint.getReporter() != null) ? complaint.getReporter().getName() : null;
+        String repEmail = (complaint.getReporter() != null) ? complaint.getReporter().getEmail() : null;
+        Long parentId = (complaint.getParentComplaint() != null) ? complaint.getParentComplaint().getId() : null;
+
+        List<ComplaintSummaryResponse> duplicates = (complaint.getDuplicates() != null)
+                ? toSummaryResponseList(complaint.getDuplicates())
+                : Collections.emptyList();
+
+        return ComplaintDetailResponse.builder()
+                .id(complaint.getId())
+                .title(complaint.getTitle())
+                .description(complaint.getDescription())
+                .category(complaint.getCategory())
+                .status(complaint.getStatus())
+                .latitude(complaint.getLatitude())
+                .longitude(complaint.getLongitude())
+                .beforeImageUrl(complaint.getBeforeImageUrl())
+                .afterImageUrl(complaint.getAfterImageUrl())
+                .workerNotes(complaint.getWorkerNotes())
+                .department(deptInfo)
+                .departmentName(deptName)
+                .reporterName(repName)
+                .reporterEmail(repEmail)
+                .parentComplaintId(parentId)
+                .duplicates(duplicates)
+                .createdAt(complaint.getCreatedAt())
+                .updatedAt(complaint.getUpdatedAt())
+                .build();
+    }
+
+    /**
+     * Maps a list of complaints to summary DTOs.
+     */
+    public List<ComplaintSummaryResponse> toSummaryResponseList(List<Complaint> complaints) {
+        if (complaints == null) {
+            return Collections.emptyList();
+        }
+        return complaints.stream().map(this::toSummaryResponse).toList();
+    }
 }

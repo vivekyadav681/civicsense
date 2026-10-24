@@ -2,8 +2,10 @@ package com.example.civicsense.exception;
 
 import com.example.civicsense.dto.response.ApiError;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.validation.FieldError;
@@ -17,7 +19,7 @@ import java.util.List;
 
 /**
  * Centralised exception handler that converts exceptions into standardised
- * {@link ApiError} JSON responses. Following the "never leak stack traces" principle.
+ * {@link ApiError} JSON responses.
  */
 @RestControllerAdvice
 @Slf4j
@@ -36,6 +38,20 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(DuplicateEmailException.class)
     public ResponseEntity<ApiError> handleDuplicate(DuplicateEmailException ex) {
         return build(HttpStatus.CONFLICT, "Conflict", ex.getMessage());
+    }
+
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ApiError> handleDataIntegrity(DataIntegrityViolationException ex) {
+        log.warn("Database constraint violation: {}", ex.getMessage());
+        String msg = ex.getRootCause() != null ? ex.getRootCause().getMessage() : ex.getMessage();
+        return build(HttpStatus.CONFLICT, "Data Conflict", msg);
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiError> handleMalformedJson(HttpMessageNotReadableException ex) {
+        log.warn("Malformed JSON or invalid enum value: {}", ex.getMessage());
+        return build(HttpStatus.BAD_REQUEST, "Malformed Request",
+                "Malformed request body or unrecognized enum value.");
     }
 
     @ExceptionHandler(BadCredentialsException.class)
@@ -82,12 +98,14 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
     }
 
-    /** Catch-all for unexpected errors — avoids leaking implementation details. */
+    /** Catch-all for unexpected errors — includes root cause message. */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiError> handleGeneric(Exception ex) {
-        log.error("Unhandled exception", ex);
-        return build(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error",
-                     "An unexpected error occurred. Please try again later.");
+        log.error("Unhandled exception: ", ex);
+        String msg = ex.getMessage() != null && !ex.getMessage().isBlank()
+                ? ex.getMessage()
+                : "An unexpected error occurred: " + ex.getClass().getSimpleName();
+        return build(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error", msg);
     }
 
     // ── Helper ───────────────────────────────────────────────────────────────
