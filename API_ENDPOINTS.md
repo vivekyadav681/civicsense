@@ -739,3 +739,36 @@ DB_URL=jdbc:postgresql://ep-bold-hall-b5wcihyc-pooler.c-7.us-east-2.aws.neon.tec
 1. `V1__init_schema.sql` — Initial schema: `users`, `departments`, and `complaints` tables with spatial and category indexes.
 2. `V2__seed_departments.sql` — Seeds default departments (`Sanitation`, `Public Works`, `Electrical`, `General Administration`).
 3. `V3__worker_department_and_notes.sql` — Adds `department_id` foreign key to `users` and `worker_notes` column to `complaints`.
+4. `V4__seed_mock_users_and_complaints.sql` — Seeds mock users (`ADMIN`, `CITIZEN`, `WORKER`) and 10 realistic complaints across Delhi & Gurgaon.
+
+---
+
+## 9. Mock Test Users & Sample Data (Delhi & Gurgaon)
+
+### 9.1 Seeded Mock Accounts
+All mock users have password: **`Password123!`**
+
+| Role | Email | Password | Assigned Department | Purpose |
+|---|---|---|---|---|
+| `ADMIN` | `admin@civicsense.gov` | `Password123!` | General Administration | Unrestricted access across all endpoints |
+| `CITIZEN` | `aarav.sharma@example.com` | `Password123!` | None | Submit complaints, view `/api/complaints/me` |
+| `CITIZEN` | `pooja.verma@example.com` | `Password123!` | None | Submit complaints, view `/api/complaints/me` |
+| `WORKER` | `worker.roads@civicsense.gov` | `Password123!` | Public Works | Triage road issues (`ROADS`) |
+| `WORKER` | `worker.waste@civicsense.gov` | `Password123!` | Sanitation | Triage waste issues (`WASTE`) |
+| `WORKER` | `worker.electric@civicsense.gov` | `Password123!` | Electrical | Triage lighting issues (`STREETLIGHTS`) |
+
+### 9.2 Seeded Delhi & Gurgaon Sample Complaints
+
+| Location | Category | Status | Coordinates (`lat, lng`) | Features Demonstrated |
+|---|---|---|---|---|
+| **Connaught Place, New Delhi** | `ROADS` | `IN_PROGRESS` | `28.6315, 77.2167` | Active field remediation, worker notes |
+| **Cyber City, DLF Phase 2, Gurgaon** | `WASTE` | `ASSIGNED` | `28.4949, 77.0895` | Department routing to Sanitation queue |
+| **Golf Course Road, Sector 54, Gurgaon** | `ROADS` | `IN_PROGRESS` | `28.4357, 77.1066` | **Parent Issue** with child duplicate linked |
+| **Golf Course Road, Sector 54, Gurgaon** | `ROADS` | `REPORTED` | `28.4358, 77.1068` | **Child Duplicate** within 20m of parent issue |
+| **MG Road Metro Station, Gurgaon** | `STREETLIGHTS` | `RESOLVED` | `28.4800, 77.0804` | Completed repair with before/after photos |
+| **Lajpat Nagar Central Market, Delhi** | `WASTE` | `RESOLVED` | `28.5700, 77.2370` | Waste compactor run with resolution evidence |
+| **Dwarka Sector 21, Delhi** | `STREETLIGHTS` | `ASSIGNED` | `28.5523, 77.0583` | High-mast lighting issue in Electrical queue |
+| **Sector 29, HUDA City Centre, Gurgaon** | `OTHER` | `REPORTED` | `28.4682, 77.0632` | Damaged safety railing in General Admin |
+| **Chandni Chowk, Old Delhi** | `WASTE` | `IN_PROGRESS` | `28.6562, 77.2309` | Special sanitation drive in progress |
+| **Sohna Road, Sector 48, Gurgaon** | `ROADS` | `ASSIGNED` | `28.4189, 77.0378` | Open stormwater drain slab issue |
+
