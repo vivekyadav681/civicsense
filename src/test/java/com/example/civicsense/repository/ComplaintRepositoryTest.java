@@ -29,6 +29,8 @@ class ComplaintRepositoryTest {
         );
 
         assertThat(nearby).isNotNull();
-        // The query should execute cleanly without any PostgreSQL syntax or GROUP BY errors
+        assertThat(nearby).isNotEmpty();
+        assertThat(nearby.get(0).getId()).isNotNull();
+        assertThat(nearby.get(0).getCategory()).isEqualTo(ComplaintCategory.WASTE);
     }
 }
