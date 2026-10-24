@@ -52,6 +52,8 @@ public class SecurityConfig {
                 .requestMatchers("/api/auth/**").permitAll()
                 // Static uploads served from local storage
                 .requestMatchers("/uploads/**").permitAll()
+                // Mock S3 endpoint for local development testing (matches AWS S3 presigned PUT behavior)
+                .requestMatchers(HttpMethod.PUT, "/api/uploads/mock-s3/**").permitAll()
                 // Allow GET to be read by anyone authenticated
                 .requestMatchers(HttpMethod.GET, "/api/complaints/**").authenticated()
                 // All other requests require authentication;

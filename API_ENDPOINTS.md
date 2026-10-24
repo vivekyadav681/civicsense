@@ -22,17 +22,90 @@ The **CivicSense** backend provides a RESTful API for reporting, routing, dedupl
 |---|---|---|---|---|
 | `POST` | `/api/auth/register` | Public | `application/json` | Register a new user |
 | `POST` | `/api/auth/login` | Public | `application/json` | Authenticate and obtain JWT |
-| `POST` | `/api/complaints` | `CITIZEN`, `ADMIN` | `multipart/form-data` | Report an issue (runs deduplication) |
+| `POST` | `/api/uploads/presigned-url` | Authenticated | `application/json` | **Request S3 upload permission & presigned PUT URL** |
+| `POST` | `/api/complaints` | `CITIZEN`, `ADMIN` | `application/json` or `multipart/form-data` | Report an issue (stores S3 URL, runs deduplication) |
 | `GET` | `/api/complaints` | Authenticated | N/A | Paginated, filtered list of complaints |
 | `GET` | `/api/complaints/{id}` | Authenticated | N/A | Get complaint details & child duplicates |
-| `PUT` | `/api/complaints/{id}/status` | `WORKER`, `ADMIN` | `multipart/form-data` | Update status + optional/mandatory after-image |
+| `PUT` | `/api/complaints/{id}/status` | `WORKER`, `ADMIN` | `application/json` or `multipart/form-data` | Update status + store S3 after-image URL |
 | `GET` | `/uploads/{folder}/{filename}` | Public | Any | View uploaded image (when local storage is active) |
 
 ---
 
-## 3. Authentication Endpoints
+## 3. Direct-to-S3 Presigned Upload Pipeline
 
-### 3.1 Register User
+Spring Boot offloads heavy image byte streaming directly to AWS S3. The Spring Boot backend only grants permission via a time-limited presigned URL, and then saves the final S3 URL in the database.
+
+### Workflow Sequence
+```
+[Client / Mobile / Web]               [Spring Boot Backend]                  [AWS S3]
+         |                                     |                                 |
+  1. POST /api/uploads/presigned-url --------->|                                 |
+     {"folder":"before",                       |                                 |
+      "contentType":"image/jpeg"}              |--- Generates signed PUT URL --->|
+         |                                     |    (valid for 15 minutes)       |
+         |<--- Returns {uploadUrl, fileUrl} ---|                                 |
+         |                                                                       |
+  2. PUT [uploadUrl] (Raw image binary stream) --------------------------------->|
+         |<----------------------- HTTP 200 OK ----------------------------------|
+         |
+  3. POST /api/complaints (Clean JSON payload with fileUrl)
+     {"title":"Pothole", "beforeImageUrl":"https://s3.../before/uuid.jpg", ...}
+         |------------------------------------>|
+         |                                     |--- Stores S3 URL in PostgreSQL
+         |<--------- HTTP 201 Created ---------|
+```
+
+---
+
+## 4. Upload Permission Endpoints
+
+### 4.1 Request Presigned S3 Upload URL
+Requests permission and a temporary signed URL to upload an image directly to Amazon S3.
+
+- **URL:** `/api/uploads/presigned-url`
+- **Method:** `POST`
+- **Auth Required:** Yes (`CITIZEN`, `WORKER`, or `ADMIN`)
+- **Headers:**
+  - `Authorization: Bearer <token>`
+  - `Content-Type: application/json`
+
+#### Request Body
+| Field | Type | Constraints | Description |
+|---|---|---|---|
+| `folder` | `string` | Required (`before` or `after`) | Namespace folder in S3 |
+| `contentType` | `string` | Required (e.g. `image/jpeg`, `image/png`, `image/webp`) | MIME type of the file |
+| `filename` | `string` | Optional (e.g. `pothole.jpg`) | Used to preserve original extension |
+
+```json
+{
+  "folder": "before",
+  "contentType": "image/jpeg",
+  "filename": "broken_light.jpg"
+}
+```
+
+#### Response: `200 OK`
+```json
+{
+  "uploadUrl": "https://civicsense-images.s3.ap-south-1.amazonaws.com/before/7eb85b12-4217-4862-a3fc-8c963f66bba9.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=...",
+  "fileUrl": "https://civicsense-images.s3.ap-south-1.amazonaws.com/before/7eb85b12-4217-4862-a3fc-8c963f66bba9.jpg",
+  "objectKey": "before/7eb85b12-4217-4862-a3fc-8c963f66bba9.jpg",
+  "expiresInSeconds": 900
+}
+```
+
+#### Uploading the File to S3 (cURL Example)
+```bash
+curl -X PUT "UPLOAD_URL_FROM_ABOVE" \
+  -H "Content-Type: image/jpeg" \
+  --data-binary "@/path/to/broken_light.jpg"
+```
+
+---
+
+## 5. Authentication Endpoints
+
+### 5.1 Register User
 Register a new citizen, worker, or administrator account.
 
 - **URL:** `/api/auth/register`
@@ -41,13 +114,6 @@ Register a new citizen, worker, or administrator account.
 - **Headers:** `Content-Type: application/json`
 
 #### Request Body
-| Field | Type | Constraints | Description |
-|---|---|---|---|
-| `name` | `string` | Required, 2-120 chars | Full name of the user |
-| `email` | `string` | Required, valid email | Unique login email |
-| `password` | `string` | Required, min 8 chars | Plain-text password (hashed with BCrypt) |
-| `role` | `string` | Optional (default: `CITIZEN`) | `CITIZEN`, `WORKER`, or `ADMIN` |
-
 ```json
 {
   "name": "Jane Citizen",
@@ -68,7 +134,7 @@ Register a new citizen, worker, or administrator account.
 
 ---
 
-### 3.2 Login User
+### 5.2 Login User
 Authenticate an existing account and obtain a JWT bearer token.
 
 - **URL:** `/api/auth/login`
@@ -87,56 +153,58 @@ Authenticate an existing account and obtain a JWT bearer token.
 #### Response: `200 OK`
 ```json
 {
-  "token": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJqYW5lLmNpdGl6ZW5AZXhhbXBsZS5jb20iLCJyb2xlIjoiQ0lUSVpFTiIsImlhdCI6MTY5ODExMjAwMCwiZXhwIjoxNjk4MTk4NDAwfQ.example_signature",
+  "token": "eyJhbGciOiJIUzI1NiJ9...",
   "email": "jane.citizen@example.com",
   "role": "CITIZEN"
 }
 ```
 
-#### Error Response: `401 Unauthorized`
-```json
-{
-  "timestamp": "2026-10-24T13:50:00Z",
-  "status": 401,
-  "error": "Unauthorized",
-  "message": "Invalid email or password"
-}
-```
-
 ---
 
-## 4. Complaint Management Endpoints
+## 6. Complaint Management Endpoints
 
-### 4.1 Create Complaint (Report an Issue)
+### 6.1 Create Complaint (Report an Issue)
 Files a new civic issue report. The system:
-1. Runs the **Haversine Deduplication Engine** (queries for unclosed complaints in the same category within 50m).
-2. If duplicate found: links new complaint as a child of the nearest parent (`parentComplaintId` set).
-3. If unique: assigns to municipal department (`WASTE` → Sanitation, `ROADS` → Public Works, etc.) and sets status to `ASSIGNED`.
-4. Uploads before-image to Local Disk or AWS S3.
+1. Runs the **Haversine Deduplication Engine** (searches open complaints in the same category within 50m).
+2. If duplicate: links new complaint as a child of the nearest parent (`parentComplaintId` set).
+3. If unique: assigns to municipal department (`WASTE` → Sanitation, `ROADS` → Public Works, etc.) and transitions status to `ASSIGNED`.
+4. Saves the `beforeImageUrl` directly into PostgreSQL.
 
 - **URL:** `/api/complaints`
 - **Method:** `POST`
 - **Auth Required:** Yes (`CITIZEN` or `ADMIN`)
 - **Headers:**
   - `Authorization: Bearer <token>`
-  - `Content-Type: multipart/form-data`
+  - `Content-Type: application/json` (Recommended Direct S3 flow) *or* `multipart/form-data`
 
-#### Multipart Form Parts
-| Part Name | Type | Content-Type | Required | Description |
-|---|---|---|---|---|
-| `complaint` | JSON Blob | `application/json` | **Yes** | Complaint metadata object |
-| `beforeImage` | Binary File | `image/*` | No | Photo evidence of the issue |
+#### Primary Option: JSON Payload (Direct S3 Presigned URL Flow)
+```json
+{
+  "title": "Pothole on 5th Main",
+  "description": "Deep pothole causing vehicle damage",
+  "category": "ROADS",
+  "latitude": 12.971598,
+  "longitude": 77.594562,
+  "beforeImageUrl": "https://civicsense-images.s3.ap-south-1.amazonaws.com/before/7eb85b12-4217-4862-a3fc-8c963f66bba9.jpg"
+}
+```
 
-#### `complaint` JSON Structure
-| Field | Type | Constraints | Description |
-|---|---|---|---|
-| `title` | `string` | Required, 5-200 chars | Short title of the issue |
-| `description` | `string` | Required, min 10 chars | Detailed explanation |
-| `category` | `string` | Required (`WASTE`, `ROADS`, `STREETLIGHTS`, `OTHER`) | Categorization |
-| `latitude` | `number` | Required, -90.0 to 90.0 | GPS latitude |
-| `longitude` | `number` | Required, -180.0 to 180.0 | GPS longitude |
+#### cURL Example (JSON Flow)
+```bash
+curl -X POST http://localhost:8080/api/complaints \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Pothole on 5th Main",
+    "description": "Deep pothole causing vehicle damage",
+    "category": "ROADS",
+    "latitude": 12.971598,
+    "longitude": 77.594562,
+    "beforeImageUrl": "https://civicsense-images.s3.ap-south-1.amazonaws.com/before/7eb85b12-4217-4862-a3fc-8c963f66bba9.jpg"
+  }'
+```
 
-#### cURL Example
+#### Secondary Option: Multipart Form-Data (Fallback)
 ```bash
 curl -X POST http://localhost:8080/api/complaints \
   -H "Authorization: Bearer YOUR_JWT_TOKEN" \
@@ -149,42 +217,33 @@ curl -X POST http://localhost:8080/api/complaints \
 {
   "id": 1,
   "title": "Pothole on 5th Main",
-  "description": "Deep pothole causing bike skid",
+  "description": "Deep pothole causing vehicle damage",
   "category": "ROADS",
   "status": "ASSIGNED",
   "latitude": 12.971598,
   "longitude": 77.594562,
-  "beforeImageUrl": "http://localhost:8080/uploads/before/3fa85f64-5717-4562-b3fc-2c963f66afa6.jpg",
+  "beforeImageUrl": "https://civicsense-images.s3.ap-south-1.amazonaws.com/before/7eb85b12-4217-4862-a3fc-8c963f66bba9.jpg",
   "afterImageUrl": null,
   "departmentName": "Public Works",
   "reporterName": "Jane Citizen",
   "reporterEmail": "jane.citizen@example.com",
   "parentComplaintId": null,
   "duplicates": [],
-  "createdAt": "2026-10-24T13:50:00Z",
-  "updatedAt": "2026-10-24T13:50:00Z"
+  "createdAt": "2026-10-24T14:30:00Z",
+  "updatedAt": "2026-10-24T14:30:00Z"
 }
 ```
 
 ---
 
-### 4.2 List Complaints (Paginated & Filtered)
-Retrieves a paginated list of top-level complaints (child duplicates are excluded from this list to prevent queue clutter).
+### 6.2 List Complaints (Paginated & Filtered)
+Retrieves a paginated list of parent complaints.
 
 - **URL:** `/api/complaints`
 - **Method:** `GET`
 - **Auth Required:** Yes (Any authenticated role)
 - **Headers:** `Authorization: Bearer <token>`
-
-#### Query Parameters
-| Parameter | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `status` | `string` | No | *All* | Filter by status (`REPORTED`, `ASSIGNED`, `IN_PROGRESS`, `RESOLVED`, `CLOSED`) |
-| `category` | `string` | No | *All* | Filter by category (`WASTE`, `ROADS`, `STREETLIGHTS`, `OTHER`) |
-| `deptId` | `number` | No | *All* | Filter by department ID (e.g. `1`) |
-| `page` | `number` | No | `0` | Zero-based page index |
-| `size` | `number` | No | `10` | Page size (max capped at 50) |
-| `sort` | `string` | No | `createdAt,desc` | Sort field and direction (`field,asc` or `field,desc`) |
+- **Query Parameters:** `status`, `category`, `deptId`, `page`, `size`, `sort`
 
 #### cURL Example
 ```bash
@@ -192,35 +251,9 @@ curl -X GET "http://localhost:8080/api/complaints?status=ASSIGNED&category=ROADS
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
-#### Response: `200 OK`
-```json
-{
-  "content": [
-    {
-      "id": 1,
-      "title": "Pothole on 5th Main",
-      "category": "ROADS",
-      "status": "ASSIGNED",
-      "latitude": 12.971598,
-      "longitude": 77.594562,
-      "departmentName": "Public Works",
-      "duplicateCount": 2,
-      "createdAt": "2026-10-24T13:50:00Z"
-    }
-  ],
-  "pageable": {
-    "pageNumber": 0,
-    "pageSize": 10
-  },
-  "totalElements": 1,
-  "totalPages": 1,
-  "last": true
-}
-```
-
 ---
 
-### 4.3 Get Complaint by ID
+### 6.3 Get Complaint by ID
 Fetches full details of a specific complaint, including information on reporter, department, before/after images, and **all child duplicate complaints linked to it**.
 
 - **URL:** `/api/complaints/{id}`
@@ -234,53 +267,9 @@ curl -X GET http://localhost:8080/api/complaints/1 \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
-#### Response: `200 OK`
-```json
-{
-  "id": 1,
-  "title": "Pothole on 5th Main",
-  "description": "Deep pothole causing bike skid",
-  "category": "ROADS",
-  "status": "ASSIGNED",
-  "latitude": 12.971598,
-  "longitude": 77.594562,
-  "beforeImageUrl": "http://localhost:8080/uploads/before/3fa85f64-5717-4562-b3fc-2c963f66afa6.jpg",
-  "afterImageUrl": null,
-  "departmentName": "Public Works",
-  "reporterName": "Jane Citizen",
-  "reporterEmail": "jane.citizen@example.com",
-  "parentComplaintId": null,
-  "duplicates": [
-    {
-      "id": 4,
-      "title": "Huge road crater near bakery",
-      "category": "ROADS",
-      "status": "REPORTED",
-      "latitude": 12.971620,
-      "longitude": 77.594580,
-      "departmentName": "Public Works",
-      "duplicateCount": 0,
-      "createdAt": "2026-10-24T14:15:00Z"
-    }
-  ],
-  "createdAt": "2026-10-24T13:50:00Z",
-  "updatedAt": "2026-10-24T13:50:00Z"
-}
-```
-
-#### Error Response: `404 Not Found`
-```json
-{
-  "timestamp": "2026-10-24T13:55:00Z",
-  "status": 404,
-  "error": "Not Found",
-  "message": "Complaint with id [999] was not found"
-}
-```
-
 ---
 
-### 4.4 Update Complaint Status
+### 6.4 Update Complaint Status
 Transitions a complaint to its next lifecycle state.
 
 #### State Machine Workflow
@@ -291,22 +280,27 @@ REPORTED ──► ASSIGNED ──► IN_PROGRESS ──► RESOLVED ──► C
 ```
 
 > [!IMPORTANT]
-> Transitioning to `RESOLVED` **strictly requires** an `afterImage` file in the multipart request (or an existing verified `afterImageUrl`).
+> Transitioning to `RESOLVED` **strictly requires** an `afterImageUrl` in the JSON request (or an uploaded file in the fallback multipart request).
 
 - **URL:** `/api/complaints/{id}/status`
 - **Method:** `PUT`
 - **Auth Required:** Yes (`WORKER` or `ADMIN`)
 - **Headers:**
   - `Authorization: Bearer <token>`
-  - `Content-Type: multipart/form-data`
+  - `Content-Type: application/json` *or* `multipart/form-data`
 
-#### Multipart Form Parts
-| Part Name | Type | Content-Type | Required | Description |
-|---|---|---|---|---|
-| `statusUpdate` | JSON Blob | `application/json` | **Yes** | Target status JSON: `{"status": "..."}` |
-| `afterImage` | Binary File | `image/*` | **Mandatory if status = RESOLVED** | Evidence photo of the fixed issue |
+#### Primary Option: JSON Payload (Direct S3 Presigned URL Flow)
+```bash
+curl -X PUT http://localhost:8080/api/complaints/1/status \
+  -H "Authorization: Bearer WORKER_JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "status": "RESOLVED",
+    "afterImageUrl": "https://civicsense-images.s3.ap-south-1.amazonaws.com/after/9fa85f64-4217-4562-b3fc-2c963f66afa6.jpg"
+  }'
+```
 
-#### cURL Example (Transitioning to RESOLVED)
+#### Secondary Option: Multipart Form-Data (Fallback)
 ```bash
 curl -X PUT http://localhost:8080/api/complaints/1/status \
   -H "Authorization: Bearer WORKER_JWT_TOKEN" \
@@ -319,58 +313,29 @@ curl -X PUT http://localhost:8080/api/complaints/1/status \
 {
   "id": 1,
   "title": "Pothole on 5th Main",
-  "description": "Deep pothole causing bike skid",
+  "description": "Deep pothole causing vehicle damage",
   "category": "ROADS",
   "status": "RESOLVED",
   "latitude": 12.971598,
   "longitude": 77.594562,
-  "beforeImageUrl": "http://localhost:8080/uploads/before/3fa85f64-5717-4562-b3fc-2c963f66afa6.jpg",
-  "afterImageUrl": "http://localhost:8080/uploads/after/7eb85b12-4217-4862-a3fc-8c963f66bba9.jpg",
+  "beforeImageUrl": "https://civicsense-images.s3.ap-south-1.amazonaws.com/before/7eb85b12-4217-4862-a3fc-8c963f66bba9.jpg",
+  "afterImageUrl": "https://civicsense-images.s3.ap-south-1.amazonaws.com/after/9fa85f64-4217-4562-b3fc-2c963f66afa6.jpg",
   "departmentName": "Public Works",
   "reporterName": "Jane Citizen",
   "reporterEmail": "jane.citizen@example.com",
   "parentComplaintId": null,
   "duplicates": [],
-  "createdAt": "2026-10-24T13:50:00Z",
-  "updatedAt": "2026-10-24T14:30:00Z"
-}
-```
-
-#### Error Response: `422 Unprocessable Entity` (Evidence missing or invalid transition)
-```json
-{
-  "timestamp": "2026-10-24T14:31:00Z",
-  "status": 422,
-  "error": "Invalid State Transition",
-  "message": "Cannot mark complaint RESOLVED without an after-evidence photo."
+  "createdAt": "2026-10-24T14:30:00Z",
+  "updatedAt": "2026-10-24T15:00:00Z"
 }
 ```
 
 ---
 
-## 5. Static File Access
+## 7. Static File Access (Local Mode)
 
 When running with local storage (`USE_LOCAL_STORAGE=true`), uploaded files can be directly retrieved in the browser or front-end client:
 
 - **Before Images:** `GET http://localhost:8080/uploads/before/{uuid}.jpg`
 - **After Images:** `GET http://localhost:8080/uploads/after/{uuid}.jpg`
 - **Auth Required:** No (Public static resource route configured in `WebConfig.java`)
-
----
-
-## 6. Standard Error Format
-
-All error responses from the API follow the unified `ApiError` format:
-
-```json
-{
-  "timestamp": "2026-10-24T14:00:00Z",
-  "status": 400,
-  "error": "Validation Failed",
-  "message": "Request validation errors",
-  "fieldErrors": [
-    "title: Title must be between 5 and 200 characters",
-    "latitude: Latitude must be <= 90"
-  ]
-}
-```

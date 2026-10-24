@@ -1,5 +1,6 @@
 package com.example.civicsense.storage;
 
+import com.example.civicsense.dto.response.PresignedUrlResponse;
 import com.example.civicsense.exception.StorageException;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
@@ -10,6 +11,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -47,6 +49,46 @@ public class LocalStorageService implements StorageService {
     }
 
     @Override
+    public PresignedUrlResponse generatePresignedUploadUrl(String folder, String contentType, String filename) {
+        String extension = "";
+        if (StringUtils.hasText(filename) && filename.contains(".")) {
+            extension = filename.substring(filename.lastIndexOf('.'));
+        }
+
+        String fileKey = folder + "/" + UUID.randomUUID() + extension;
+        // In local development, client PUTs directly to our mock S3 endpoint
+        String uploadUrl = "http://localhost:" + serverPort + "/api/uploads/mock-s3/" + fileKey;
+        // The permanent URL where files are served publicly via WebConfig
+        String fileUrl = "http://localhost:" + serverPort + "/uploads/" + fileKey;
+
+        log.info("Generated mock presigned URL for local testing: uploadUrl={}", uploadUrl);
+
+        return PresignedUrlResponse.builder()
+                .uploadUrl(uploadUrl)
+                .fileUrl(fileUrl)
+                .objectKey(fileKey)
+                .expiresInSeconds(900L)
+                .build();
+    }
+
+    /**
+     * Stores raw input stream from mock S3 PUT endpoint.
+     */
+    public void storeRawStream(String fileKey, InputStream inputStream) {
+        if (fileKey.contains("..")) {
+            throw new StorageException("Path traversal attempt in key: " + fileKey, null);
+        }
+        Path targetPath = rootLocation.resolve(fileKey);
+        try {
+            Files.createDirectories(targetPath.getParent());
+            Files.copy(inputStream, targetPath, StandardCopyOption.REPLACE_EXISTING);
+            log.info("Stored mock S3 upload to local disk: {}", targetPath);
+        } catch (IOException e) {
+            throw new StorageException("Failed to write mock upload: " + fileKey, e);
+        }
+    }
+
+    @Override
     public String store(MultipartFile file, String folder) {
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("Cannot store an empty file");
@@ -55,12 +97,10 @@ public class LocalStorageService implements StorageService {
         String originalFilename = StringUtils.cleanPath(
                 file.getOriginalFilename() != null ? file.getOriginalFilename() : "upload");
 
-        // Guard against path-traversal attacks
         if (originalFilename.contains("..")) {
             throw new StorageException("Filename contains invalid path sequence: " + originalFilename, null);
         }
 
-        // Generate a unique filename to avoid collisions
         String extension = originalFilename.contains(".")
                 ? originalFilename.substring(originalFilename.lastIndexOf('.'))
                 : "";
@@ -75,7 +115,6 @@ public class LocalStorageService implements StorageService {
             throw new StorageException("Failed to store file: " + filename, ex);
         }
 
-        // Return a localhost URL pointing to the static resource endpoint
         String fileUrl = "http://localhost:" + serverPort + "/uploads/" + filename;
         log.debug("Stored file locally → {}", fileUrl);
         return fileUrl;

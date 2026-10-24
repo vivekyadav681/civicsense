@@ -113,9 +113,12 @@ public class ComplaintServiceImpl implements ComplaintService {
         User reporter = userRepository.findByEmail(reporterEmail)
                 .orElseThrow(() -> new ResourceNotFoundException("User", -1L));
 
-        // 2. Upload before-image
+        // 2. Resolve before-image: prefer direct S3 URL from client, fallback to multipart upload
         String beforeImageUrl = null;
-        if (beforeImage != null && !beforeImage.isEmpty()) {
+        if (StringUtils.hasText(request.getBeforeImageUrl())) {
+            beforeImageUrl = request.getBeforeImageUrl();
+            log.info("Using direct S3 beforeImageUrl from client: {}", beforeImageUrl);
+        } else if (beforeImage != null && !beforeImage.isEmpty()) {
             beforeImageUrl = storageService.store(beforeImage, "before");
         }
 
@@ -205,7 +208,10 @@ public class ComplaintServiceImpl implements ComplaintService {
 
         // Evidence gate: RESOLVED requires an after-image
         if (target == ComplaintStatus.RESOLVED) {
-            if (afterImage != null && !afterImage.isEmpty()) {
+            if (StringUtils.hasText(request.getAfterImageUrl())) {
+                complaint.setAfterImageUrl(request.getAfterImageUrl());
+                log.info("Using direct S3 afterImageUrl from client: {}", request.getAfterImageUrl());
+            } else if (afterImage != null && !afterImage.isEmpty()) {
                 complaint.setAfterImageUrl(storageService.store(afterImage, "after"));
                 log.info("After-image stored for complaint id={}", id);
             } else if (!StringUtils.hasText(complaint.getAfterImageUrl())) {
