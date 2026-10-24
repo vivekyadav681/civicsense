@@ -49,6 +49,11 @@ public class User implements UserDetails {
     @Column(nullable = false, length = 20)
     private Role role;
 
+    /** Assigned department (especially for WORKER role). */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "department_id", foreignKey = @ForeignKey(name = "fk_users_department"))
+    private Department department;
+
     @Column(nullable = false, updatable = false)
     private Instant createdAt;
 

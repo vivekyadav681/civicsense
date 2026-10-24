@@ -1,36 +1,23 @@
 package com.example.civicsense.storage;
 
-import com.example.civicsense.dto.response.PresignedUrlResponse;
 import org.springframework.web.multipart.MultipartFile;
 
 /**
- * Storage abstraction defining the contract for file storage and presigned upload operations.
- * Two implementations are provided:
- * <ul>
- *   <li>{@link LocalStorageService}  — stores files on disk; for development/testing.</li>
- *   <li>{@link S3StorageService}     — presigned URLs and uploads on AWS S3; for production.</li>
- * </ul>
- * The active implementation is selected via the {@code app.storage.use-local} property.
+ * Storage abstraction for image uploads.
+ *
+ * <p>The single production implementation is
+ * {@link CloudinaryStorageService}, which uploads files directly to
+ * Cloudinary and returns the secure HTTPS URL.
  */
 public interface StorageService {
 
     /**
-     * Generates a time-limited presigned PUT URL allowing the client to upload
-     * an image directly to storage (S3) without proxying through Spring Boot.
+     * Uploads a multipart file to cloud storage and returns the permanent
+     * public URL of the stored resource.
      *
-     * @param folder      target folder namespace ("before" or "after")
-     * @param contentType MIME type of the file (e.g. "image/jpeg")
-     * @param filename    original file name (used to retain extension)
-     * @return {@link PresignedUrlResponse} containing uploadUrl and permanent fileUrl
-     */
-    PresignedUrlResponse generatePresignedUploadUrl(String folder, String contentType, String filename);
-
-    /**
-     * Direct upload fallback (accepts MultipartFile and returns the stored public URL).
-     *
-     * @param file   the multipart file uploaded by the client
-     * @param folder logical folder/prefix (e.g. "before", "after")
-     * @return the public URL of the stored file
+     * @param file   the image file received from the client
+     * @param folder logical folder/namespace (e.g. {@code "before"}, {@code "after"})
+     * @return secure HTTPS URL of the uploaded image
      */
     String store(MultipartFile file, String folder);
 }

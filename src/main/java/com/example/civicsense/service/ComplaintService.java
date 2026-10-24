@@ -1,68 +1,93 @@
 package com.example.civicsense.service;
 
-import com.example.civicsense.dto.request.CreateComplaintRequest;
-import com.example.civicsense.dto.request.UpdateStatusRequest;
+import com.example.civicsense.dto.request.CreateComplaintForm;
+import com.example.civicsense.dto.request.UpdateComplaintStatusForm;
+import com.example.civicsense.dto.response.ComplaintCreatedResponse;
 import com.example.civicsense.dto.response.ComplaintDetailResponse;
+import com.example.civicsense.dto.response.ComplaintStatusUpdatedResponse;
 import com.example.civicsense.dto.response.ComplaintSummaryResponse;
 import com.example.civicsense.enums.ComplaintCategory;
 import com.example.civicsense.enums.ComplaintStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
-import org.springframework.web.multipart.MultipartFile;
 
 /**
- * Defines the business operations for the complaint lifecycle.
- * Separating interface from implementation allows easy unit-testing via mocking.
+ * Service contract for the civic complaint tracking lifecycle.
  */
 public interface ComplaintService {
 
     /**
-     * Creates a new complaint, runs deduplication, routes to a department,
-     * and uploads the before-image.
+     * Files a new complaint using multipart data (including beforeImage uploaded to Cloudinary),
+     * runs deduplication detection, and auto-routes to the designated department.
      *
-     * @param request     validated complaint creation data
-     * @param beforeImage the "before" photo evidence (required)
-     * @param reporterEmail the email of the authenticated citizen making the report
-     * @return the full detail response of the created complaint
+     * @param form          multipart form containing complaint details and beforeImage file
+     * @param reporterEmail email of authenticated citizen
+     * @return creation confirmation with duplicate grouping message
      */
-    ComplaintDetailResponse createComplaint(
-            CreateComplaintRequest request,
-            MultipartFile beforeImage,
-            String reporterEmail);
+    ComplaintCreatedResponse createComplaint(CreateComplaintForm form, String reporterEmail);
 
     /**
-     * Returns a paginated, filtered list of top-level (non-duplicate) complaints.
+     * Returns a paginated public feed of top-level complaints with optional category,
+     * status, and GPS radius search.
      *
-     * @param status   optional filter by complaint status
-     * @param category optional filter by complaint category
-     * @param deptId   optional filter by department ID
+     * @param category optional category filter
+     * @param status   optional status filter (e.g. "OPEN" or specific status)
+     * @param lat      optional GPS latitude
+     * @param lng      optional GPS longitude
+     * @param radius   optional search radius in metres
      * @param pageable pagination and sorting parameters
+     * @return paginated list of complaints
      */
     Page<ComplaintSummaryResponse> getComplaints(
-            ComplaintStatus status,
             ComplaintCategory category,
-            Long deptId,
+            String status,
+            Double lat,
+            Double lng,
+            Double radius,
             Pageable pageable);
 
     /**
-     * Returns the full detail of a complaint, including its list of duplicates.
+     * Returns full details of a complaint along with its duplicates.
      *
-     * @param id the complaint ID
-     * @throws com.example.civicsense.exception.ResourceNotFoundException if not found
+     * @param id complaint ID
+     * @return full details response
      */
     ComplaintDetailResponse getComplaintById(Long id);
 
     /**
-     * Updates the status of a complaint, enforcing the state machine rules.
-     * Requires the after-image when transitioning to RESOLVED.
+     * Returns complaints filed by the authenticated citizen.
      *
-     * @param id         the complaint ID
-     * @param request    the desired new status
-     * @param afterImage optional "after" photo evidence (required for RESOLVED)
-     * @return the updated full detail response
+     * @param reporterEmail citizen email extracted from JWT
+     * @param pageable      pagination parameters
+     * @return paginated citizen complaints
      */
-    ComplaintDetailResponse updateStatus(
+    Page<ComplaintSummaryResponse> getMyComplaints(String reporterEmail, Pageable pageable);
+
+    /**
+     * Returns the department triage queue for the authenticated worker,
+     * implicitly filtered by the worker's assigned department.
+     *
+     * @param workerEmail worker email extracted from JWT
+     * @param status      optional status filter (e.g. ASSIGNED, IN_PROGRESS)
+     * @param pageable    pagination parameters
+     * @return paginated complaints in worker's queue
+     */
+    Page<ComplaintSummaryResponse> getDepartmentQueue(
+            String workerEmail,
+            ComplaintStatus status,
+            Pageable pageable);
+
+    /**
+     * Updates complaint lifecycle status and uploads resolution evidence photo (afterImage)
+     * to Cloudinary when transitioning to RESOLVED.
+     *
+     * @param id          complaint ID
+     * @param form        multipart form containing status, afterImage, and worker notes
+     * @param workerEmail email of worker performing the update
+     * @return status update confirmation
+     */
+    ComplaintStatusUpdatedResponse updateStatus(
             Long id,
-            UpdateStatusRequest request,
-            MultipartFile afterImage);
+            UpdateComplaintStatusForm form,
+            String workerEmail);
 }

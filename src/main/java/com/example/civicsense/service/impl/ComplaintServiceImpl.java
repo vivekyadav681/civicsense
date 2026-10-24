@@ -1,8 +1,10 @@
 package com.example.civicsense.service.impl;
 
-import com.example.civicsense.dto.request.CreateComplaintRequest;
-import com.example.civicsense.dto.request.UpdateStatusRequest;
+import com.example.civicsense.dto.request.CreateComplaintForm;
+import com.example.civicsense.dto.request.UpdateComplaintStatusForm;
+import com.example.civicsense.dto.response.ComplaintCreatedResponse;
 import com.example.civicsense.dto.response.ComplaintDetailResponse;
+import com.example.civicsense.dto.response.ComplaintStatusUpdatedResponse;
 import com.example.civicsense.dto.response.ComplaintSummaryResponse;
 import com.example.civicsense.entity.Complaint;
 import com.example.civicsense.entity.Department;
@@ -26,7 +28,6 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
-import org.springframework.web.multipart.MultipartFile;
 
 import java.util.EnumMap;
 import java.util.List;
@@ -35,18 +36,6 @@ import java.util.Set;
 
 /**
  * Core business logic implementation for the civic complaint lifecycle.
- *
- * <h2>Key responsibilities</h2>
- * <ol>
- *   <li><b>Deduplication Engine</b>: Before persisting a new complaint, scans the
- *       database for existing open complaints of the same category within a configurable
- *       radius (default 50 m) using the Haversine formula native query. If a match is
- *       found, the new complaint is saved as a "child" of the nearest existing one.</li>
- *   <li><b>Automated Department Routing</b>: Maps each ComplaintCategory to a specific
- *       Department so complaints are immediately assigned on creation.</li>
- *   <li><b>State Machine</b>: Enforces the valid lifecycle transitions and validates
- *       that resolution evidence (afterImage) is present before marking RESOLVED.</li>
- * </ol>
  */
 @Service
 @RequiredArgsConstructor
@@ -78,16 +67,11 @@ public class ComplaintServiceImpl implements ComplaintService {
     // STATE MACHINE DEFINITION
     // =========================================================================
 
-    /**
-     * Valid forward transitions.
-     * REPORTED -> ASSIGNED -> IN_PROGRESS -> RESOLVED -> CLOSED
-     * Transitions not in this map are forbidden.
-     */
     private static final Map<ComplaintStatus, Set<ComplaintStatus>> VALID_TRANSITIONS =
             new EnumMap<>(ComplaintStatus.class);
 
     static {
-        VALID_TRANSITIONS.put(ComplaintStatus.REPORTED,    Set.of(ComplaintStatus.ASSIGNED));
+        VALID_TRANSITIONS.put(ComplaintStatus.REPORTED,    Set.of(ComplaintStatus.ASSIGNED, ComplaintStatus.IN_PROGRESS));
         VALID_TRANSITIONS.put(ComplaintStatus.ASSIGNED,    Set.of(ComplaintStatus.IN_PROGRESS));
         VALID_TRANSITIONS.put(ComplaintStatus.IN_PROGRESS, Set.of(ComplaintStatus.RESOLVED));
         VALID_TRANSITIONS.put(ComplaintStatus.RESOLVED,    Set.of(ComplaintStatus.CLOSED));
@@ -95,51 +79,41 @@ public class ComplaintServiceImpl implements ComplaintService {
     }
 
     // =========================================================================
-    // CREATE COMPLAINT
+    // 1. CREATE COMPLAINT (Citizen)
     // =========================================================================
 
     @Override
     @Transactional
     @PreAuthorize("hasRole('CITIZEN') or hasRole('ADMIN')")
-    public ComplaintDetailResponse createComplaint(
-            CreateComplaintRequest request,
-            MultipartFile beforeImage,
-            String reporterEmail) {
+    public ComplaintCreatedResponse createComplaint(CreateComplaintForm form, String reporterEmail) {
+        log.info("Submitting complaint: category={}, lat={}, lng={}, reporter={}",
+                form.getCategory(), form.getLatitude(), form.getLongitude(), reporterEmail);
 
-        log.info("Creating complaint: category={}, lat={}, lng={}",
-                request.getCategory(), request.getLatitude(), request.getLongitude());
-
-        // 1. Resolve the reporter
+        // 1. Resolve the citizen reporter
         User reporter = userRepository.findByEmail(reporterEmail)
                 .orElseThrow(() -> new ResourceNotFoundException("User", -1L));
 
-        // 2. Resolve before-image: prefer direct S3 URL from client, fallback to multipart upload
+        // 2. Upload photo evidence to Cloudinary
         String beforeImageUrl = null;
-        if (StringUtils.hasText(request.getBeforeImageUrl())) {
-            beforeImageUrl = request.getBeforeImageUrl();
-            log.info("Using direct S3 beforeImageUrl from client: {}", beforeImageUrl);
-        } else if (beforeImage != null && !beforeImage.isEmpty()) {
-            beforeImageUrl = storageService.store(beforeImage, "before");
+        if (form.getBeforeImage() != null && !form.getBeforeImage().isEmpty()) {
+            beforeImageUrl = storageService.store(form.getBeforeImage(), "before");
+            log.info("Before-image uploaded to Cloudinary: {}", beforeImageUrl);
         }
 
-        // 3. DEDUPLICATION ENGINE
+        // 3. Deduplication Engine: scan for duplicate in 50m radius
         Complaint parentComplaint = findNearestDuplicate(
-                request.getCategory(), request.getLatitude(), request.getLongitude());
+                form.getCategory(), form.getLatitude(), form.getLongitude());
 
-        if (parentComplaint != null) {
-            log.info("Duplicate detected — linking new complaint to parent ID={}", parentComplaint.getId());
-        }
+        // 4. Automated Department Routing
+        Department department = resolveDepartment(form.getCategory());
 
-        // 4. AUTOMATED DEPARTMENT ROUTING
-        Department department = resolveDepartment(request.getCategory());
-
-        // 5. Persist
+        // 5. Persist complaint
         Complaint complaint = Complaint.builder()
-                .title(request.getTitle())
-                .description(request.getDescription())
-                .category(request.getCategory())
-                .latitude(request.getLatitude())
-                .longitude(request.getLongitude())
+                .title(form.getTitle())
+                .description(form.getDescription())
+                .category(form.getCategory())
+                .latitude(form.getLatitude())
+                .longitude(form.getLongitude())
                 .status(ComplaintStatus.REPORTED)
                 .beforeImageUrl(beforeImageUrl)
                 .reporter(reporter)
@@ -149,33 +123,62 @@ public class ComplaintServiceImpl implements ComplaintService {
 
         Complaint saved = complaintRepository.save(complaint);
 
-        // Auto-assign top-level complaints that have a department
+        // Auto-assign top-level complaints if department resolved
         if (parentComplaint == null && department != null) {
             saved.setStatus(ComplaintStatus.ASSIGNED);
             saved = complaintRepository.save(saved);
         }
 
-        log.info("Complaint saved: id={}, isDuplicate={}", saved.getId(), parentComplaint != null);
-        return complaintMapper.toDetailResponse(saved);
+        String message = parentComplaint != null
+                ? "Complaint recorded. Grouped with existing issue #" + parentComplaint.getId()
+                : "Complaint recorded.";
+
+        return ComplaintCreatedResponse.builder()
+                .id(saved.getId())
+                .status(saved.getStatus())
+                .departmentId(saved.getDepartment() != null ? saved.getDepartment().getId() : null)
+                .parentComplaintId(parentComplaint != null ? parentComplaint.getId() : null)
+                .message(message)
+                .build();
     }
 
     // =========================================================================
-    // GET COMPLAINTS (Paginated + Filtered)
+    // 2. GET COMPLAINTS (Feed / Map view)
     // =========================================================================
 
     @Override
     @Transactional(readOnly = true)
     public Page<ComplaintSummaryResponse> getComplaints(
-            ComplaintStatus status, ComplaintCategory category,
-            Long deptId, Pageable pageable) {
+            ComplaintCategory category,
+            String status,
+            Double lat,
+            Double lng,
+            Double radius,
+            Pageable pageable) {
 
-        return complaintRepository
-                .findAllFiltered(status, category, deptId, pageable)
+        // If GPS coordinates and radius are supplied, perform spatial Haversine search
+        if (lat != null && lng != null && radius != null && radius > 0) {
+            String catName = category != null ? category.name() : null;
+            return complaintRepository.findNearbyComplaintsFeed(catName, status, lat, lng, radius, pageable)
+                    .map(complaintMapper::toSummaryResponse);
+        }
+
+        // Standard filter query
+        ComplaintStatus statusEnum = null;
+        if (StringUtils.hasText(status) && !status.equalsIgnoreCase("OPEN")) {
+            try {
+                statusEnum = ComplaintStatus.valueOf(status.toUpperCase());
+            } catch (IllegalArgumentException ignored) {
+                // fall through to null filter
+            }
+        }
+
+        return complaintRepository.findAllFiltered(statusEnum, category, null, pageable)
                 .map(complaintMapper::toSummaryResponse);
     }
 
     // =========================================================================
-    // GET COMPLAINT BY ID
+    // 3. GET COMPLAINT BY ID
     // =========================================================================
 
     @Override
@@ -188,52 +191,92 @@ public class ComplaintServiceImpl implements ComplaintService {
     }
 
     // =========================================================================
-    // UPDATE STATUS (State Machine + Evidence Validation)
+    // 4. GET MY SUBMITTED COMPLAINTS (Citizen)
+    // =========================================================================
+
+    @Override
+    @Transactional(readOnly = true)
+    @PreAuthorize("hasRole('CITIZEN') or hasRole('ADMIN')")
+    public Page<ComplaintSummaryResponse> getMyComplaints(String reporterEmail, Pageable pageable) {
+        return complaintRepository.findByReporterEmail(reporterEmail, pageable)
+                .map(complaintMapper::toSummaryResponse);
+    }
+
+    // =========================================================================
+    // 5. GET DEPARTMENT QUEUE (Worker)
+    // =========================================================================
+
+    @Override
+    @Transactional(readOnly = true)
+    @PreAuthorize("hasRole('WORKER') or hasRole('ADMIN')")
+    public Page<ComplaintSummaryResponse> getDepartmentQueue(
+            String workerEmail, ComplaintStatus status, Pageable pageable) {
+
+        User worker = userRepository.findByEmail(workerEmail)
+                .orElseThrow(() -> new ResourceNotFoundException("Worker", -1L));
+
+        if (worker.getDepartment() == null) {
+            throw new ResourceNotFoundException("Worker is not assigned to any department.");
+        }
+
+        return complaintRepository.findByDepartmentIdAndOptionalStatus(
+                worker.getDepartment().getId(), status, pageable)
+                .map(complaintMapper::toSummaryResponse);
+    }
+
+    // =========================================================================
+    // 6. UPDATE STATUS & RESOLVE (Worker)
     // =========================================================================
 
     @Override
     @Transactional
     @PreAuthorize("hasRole('WORKER') or hasRole('ADMIN')")
-    public ComplaintDetailResponse updateStatus(
-            Long id, UpdateStatusRequest request, MultipartFile afterImage) {
+    public ComplaintStatusUpdatedResponse updateStatus(
+            Long id, UpdateComplaintStatusForm form, String workerEmail) {
 
-        Complaint complaint    = findComplaintOrThrow(id);
+        Complaint complaint = findComplaintOrThrow(id);
         ComplaintStatus current = complaint.getStatus();
-        ComplaintStatus target  = request.getStatus();
+        ComplaintStatus target = form.getStatus();
 
-        log.info("Status update: id={}, {} -> {}", id, current, target);
+        log.info("Worker [{}] updating complaint id={}: {} -> {}", workerEmail, id, current, target);
 
-        // Enforce state machine
+        // Validate state machine transition
         validateTransition(current, target);
 
-        // Evidence gate: RESOLVED requires an after-image
+        // Evidence gate: RESOLVED requires afterImage photo evidence
         if (target == ComplaintStatus.RESOLVED) {
-            if (StringUtils.hasText(request.getAfterImageUrl())) {
-                complaint.setAfterImageUrl(request.getAfterImageUrl());
-                log.info("Using direct S3 afterImageUrl from client: {}", request.getAfterImageUrl());
-            } else if (afterImage != null && !afterImage.isEmpty()) {
-                complaint.setAfterImageUrl(storageService.store(afterImage, "after"));
-                log.info("After-image stored for complaint id={}", id);
+            if (form.getAfterImage() != null && !form.getAfterImage().isEmpty()) {
+                String afterUrl = storageService.store(form.getAfterImage(), "after");
+                complaint.setAfterImageUrl(afterUrl);
+                log.info("Resolution after-image uploaded to Cloudinary: {}", afterUrl);
             } else if (!StringUtils.hasText(complaint.getAfterImageUrl())) {
                 throw new IllegalStateTransitionException(
-                    "Cannot mark complaint RESOLVED without an after-evidence photo.");
+                        "Cannot mark complaint RESOLVED without an after-evidence photo.");
             }
+        } else if (form.getAfterImage() != null && !form.getAfterImage().isEmpty()) {
+            String afterUrl = storageService.store(form.getAfterImage(), "after");
+            complaint.setAfterImageUrl(afterUrl);
+        }
+
+        if (StringUtils.hasText(form.getWorkerNotes())) {
+            complaint.setWorkerNotes(form.getWorkerNotes());
         }
 
         complaint.setStatus(target);
         Complaint updated = complaintRepository.save(complaint);
-        log.info("Status updated: id={}, newStatus={}", id, target);
-        return complaintMapper.toDetailResponse(updated);
+
+        return ComplaintStatusUpdatedResponse.builder()
+                .id(updated.getId())
+                .status(updated.getStatus())
+                .afterImageUrl(updated.getAfterImageUrl())
+                .message("Status updated successfully")
+                .build();
     }
 
     // =========================================================================
     // PRIVATE HELPERS
     // =========================================================================
 
-    /**
-     * Queries for the nearest open parent complaint within the deduplication radius.
-     * Returns null if no duplicate is found — the new complaint becomes a parent.
-     */
     private Complaint findNearestDuplicate(ComplaintCategory category, double lat, double lng) {
         List<Complaint> nearby = complaintRepository.findNearbyOpenComplaintsInCategory(
                 category, lat, lng, deduplicationRadiusMetres);
@@ -241,14 +284,11 @@ public class ComplaintServiceImpl implements ComplaintService {
             return null;
         }
         Complaint nearest = nearby.get(0);
-        log.debug("Nearest duplicate: id={}, within {}m", nearest.getId(), deduplicationRadiusMetres);
+        log.info("Duplicate detected within {}m of existing complaint #{}",
+                deduplicationRadiusMetres, nearest.getId());
         return nearest;
     }
 
-    /**
-     * Maps a ComplaintCategory to its owning Department.
-     * Department names are configurable via application.yaml app.departments.* keys.
-     */
     private Department resolveDepartment(ComplaintCategory category) {
         String deptName = switch (category) {
             case WASTE        -> sanitationDeptName;
@@ -258,12 +298,11 @@ public class ComplaintServiceImpl implements ComplaintService {
         };
         return departmentRepository.findByName(deptName)
                 .orElseGet(() -> {
-                    log.warn("Department '{}' not found. Complaint will be unassigned.", deptName);
+                    log.warn("Department '{}' not found in database.", deptName);
                     return null;
                 });
     }
 
-    /** Validates that the requested status transition is allowed by the state machine. */
     private void validateTransition(ComplaintStatus from, ComplaintStatus to) {
         Set<ComplaintStatus> allowed = VALID_TRANSITIONS.getOrDefault(from, Set.of());
         if (!allowed.contains(to)) {

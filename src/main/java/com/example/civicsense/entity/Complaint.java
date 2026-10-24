@@ -74,11 +74,15 @@ public class Complaint {
     private String beforeImageUrl;
 
     /**
-     * S3/filesystem URL of the "after" photo uploaded by a worker as resolution evidence.
+     * S3/Cloudinary URL of the "after" photo uploaded by a worker as resolution evidence.
      * Mandatory for transition to {@link ComplaintStatus#RESOLVED}.
      */
     @Column(length = 2048)
     private String afterImageUrl;
+
+    /** Notes or comments provided by the worker when updating or resolving the complaint. */
+    @Column(columnDefinition = "TEXT")
+    private String workerNotes;
 
     // ── Relationships ────────────────────────────────────────────────────────
 

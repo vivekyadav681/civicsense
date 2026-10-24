@@ -37,14 +37,11 @@ app:
 
   # ── Storage Configuration ──
   storage:
-    use-local: ${USE_LOCAL_STORAGE}
-    local-upload-dir: ${LOCAL_UPLOAD_DIR}
-    s3:
-      bucket-name: ${S3_BUCKET}
-      region: ${AWS_REGION}
-      access-key: ${AWS_ACCESS_KEY}
-      secret-key: ${AWS_SECRET_KEY}
-      base-url: ${S3_BASE_URL}
+    cloudinary:
+      cloud-name: ${CLOUDINARY_CLOUD_NAME}
+      api-key: ${CLOUDINARY_API_KEY}
+      api-secret: ${CLOUDINARY_API_SECRET}
+      folder: ${CLOUDINARY_FOLDER}
 
   # ── Deduplication radius in metres ──
   deduplication:

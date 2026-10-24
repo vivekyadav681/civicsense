@@ -50,14 +50,14 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 // Public authentication endpoints
                 .requestMatchers("/api/auth/**").permitAll()
-                // Static uploads served from local storage
-                .requestMatchers("/uploads/**").permitAll()
-                // Mock S3 endpoint for local development testing (matches AWS S3 presigned PUT behavior)
-                .requestMatchers(HttpMethod.PUT, "/api/uploads/mock-s3/**").permitAll()
-                // Allow GET to be read by anyone authenticated
-                .requestMatchers(HttpMethod.GET, "/api/complaints/**").authenticated()
-                // All other requests require authentication;
-                // fine-grained role checks are on the service/controller layer via @PreAuthorize
+                // Public system departments list
+                .requestMatchers(HttpMethod.GET, "/api/departments/**").permitAll()
+                // Citizen my-complaints endpoint requires authentication
+                .requestMatchers(HttpMethod.GET, "/api/complaints/me").authenticated()
+                // Public feed and single complaint detail view
+                .requestMatchers(HttpMethod.GET, "/api/complaints").permitAll()
+                .requestMatchers(HttpMethod.GET, "/api/complaints/{id:[0-9]+}").permitAll()
+                // All other requests require authentication; fine-grained checks via @PreAuthorize
                 .anyRequest().authenticated()
             )
 

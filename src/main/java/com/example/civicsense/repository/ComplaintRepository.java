@@ -109,4 +109,94 @@ public interface ComplaintRepository extends JpaRepository<Complaint, Long> {
      * Used by the detail endpoint to show the full picture of a complaint.
      */
     List<Complaint> findByParentComplaintId(Long parentComplaintId);
+
+    /**
+     * Finds complaints within a given radius using the Haversine formula,
+     * supporting optional category and status filters.
+     */
+    @Query(value = """
+        SELECT c.*
+        FROM complaints c
+        WHERE (:category IS NULL OR c.category = :category)
+          AND (
+              :status IS NULL
+              OR (:status = 'OPEN' AND c.status NOT IN ('RESOLVED', 'CLOSED'))
+              OR (c.status = :status)
+          )
+          AND c.parent_complaint_id IS NULL
+          AND (
+              (6371000 * acos(
+                  LEAST(1.0, cos(radians(:lat)) * cos(radians(c.latitude))
+                  * cos(radians(c.longitude) - radians(:lng))
+                  + sin(radians(:lat)) * sin(radians(c.latitude)))
+              )) <= :radiusMetres
+          )
+        ORDER BY c.created_at DESC
+        """,
+        countQuery = """
+        SELECT count(*)
+        FROM complaints c
+        WHERE (:category IS NULL OR c.category = :category)
+          AND (
+              :status IS NULL
+              OR (:status = 'OPEN' AND c.status NOT IN ('RESOLVED', 'CLOSED'))
+              OR (c.status = :status)
+          )
+          AND c.parent_complaint_id IS NULL
+          AND (
+              (6371000 * acos(
+                  LEAST(1.0, cos(radians(:lat)) * cos(radians(c.latitude))
+                  * cos(radians(c.longitude) - radians(:lng))
+                  + sin(radians(:lat)) * sin(radians(c.latitude)))
+              )) <= :radiusMetres
+          )
+        """,
+        nativeQuery = true)
+    Page<Complaint> findNearbyComplaintsFeed(
+            @Param("category")     String category,
+            @Param("status")       String status,
+            @Param("lat")          double lat,
+            @Param("lng")          double lng,
+            @Param("radiusMetres") double radiusMetres,
+            Pageable pageable
+    );
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MY COMPLAINTS (Citizen)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Returns a paginated list of all complaints filed by a specific reporter,
+     * ordered newest-first.
+     */
+    @Query("""
+        SELECT c FROM Complaint c
+        WHERE c.reporter.email = :email
+        ORDER BY c.createdAt DESC
+        """)
+    Page<Complaint> findByReporterEmail(
+            @Param("email") String email,
+            Pageable pageable
+    );
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // DEPARTMENT QUEUE (Worker)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Returns a paginated list of top-level complaints assigned to a specific department,
+     * with an optional status filter.
+     */
+    @Query("""
+        SELECT c FROM Complaint c
+        WHERE c.department.id = :deptId
+          AND (:status IS NULL OR c.status = :status)
+          AND c.parentComplaint IS NULL
+        ORDER BY c.createdAt ASC
+        """)
+    Page<Complaint> findByDepartmentIdAndOptionalStatus(
+            @Param("deptId")  Long deptId,
+            @Param("status")  ComplaintStatus status,
+            Pageable pageable
+    );
 }

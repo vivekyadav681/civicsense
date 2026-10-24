@@ -60,10 +60,14 @@ public class GlobalExceptionHandler {
                      "Uploaded file exceeds the maximum allowed size (10 MB)");
     }
 
-    /** Handles @Valid annotation failures — returns per-field errors. */
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<ApiError> handleValidation(MethodArgumentNotValidException ex) {
-        List<String> fieldErrors = ex.getBindingResult().getFieldErrors().stream()
+    /** Handles @Valid annotation failures for both @RequestBody and @ModelAttribute. */
+    @ExceptionHandler({MethodArgumentNotValidException.class, org.springframework.validation.BindException.class})
+    public ResponseEntity<ApiError> handleValidation(Exception ex) {
+        org.springframework.validation.BindingResult bindingResult = ex instanceof MethodArgumentNotValidException manve
+                ? manve.getBindingResult()
+                : ((org.springframework.validation.BindException) ex).getBindingResult();
+
+        List<String> fieldErrors = bindingResult.getFieldErrors().stream()
                 .map(FieldError::getDefaultMessage)
                 .toList();
 
