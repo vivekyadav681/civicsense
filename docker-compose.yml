@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  civicsense-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: civicsense-backend
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+    env_file:
+      - .env
+    volumes:
+      # Persist local uploads on the host machine
+      - ./uploads:/app/uploads
+    restart: unless-stopped
